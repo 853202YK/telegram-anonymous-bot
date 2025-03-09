@@ -1,82 +1,84 @@
-import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import os
+import logging
+import json
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.utils.executor import start_webhook
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiohttp import web
+import aiohttp
 
-# 🔹 Replace with your own bot token
-BOT_TOKEN = "7673377030:AAGABRwbjbRrjO0TphZ76vpaf3V8NkZbuqA"
-bot = telebot.TeleBot(BOT_TOKEN)
+# Load environment variables
+TOKEN = os.getenv("7673377030:AAGABRwbjbRrjO0TphZ76vpaf3V8NkZbuqA")
+PAYPAL_CLIENT_ID = os.getenv("AR2aFhcUCKtnLAJ2RQ7TkA06h1A9TWKgulelPu4kUwoTU4V3jMxiSXEuk31EHEEBOhjiEzLph3iVqC-T")
+PAYPAL_CLIENT_SECRET = os.getenv("ELwCRdPPyQr3oWafK1H6US424Jd8x_cJAW8ZSYnTe6MRKlpCOTJUb8AGgwWVXmGThIMZdv7Jxc0q7cfK")
+WEBHOOK_URL = "https://mychatbot.up.railway.app/webhook"
+WEBHOOK_PATH = "/webhook"
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.getenv("PORT", 8000))
+PAYPAL_WEBHOOK_ID = "2N431123CU580432A"
 
-# 🔹 Dictionary to store chat pairs
-active_chats = {}
-waiting_users = []
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+logging.basicConfig(level=logging.INFO)
 
-# 🔹 VIP Members (You can store in a database later)
-vip_members = set()
+# Free vs Paid Features
+FREE_FEATURES = "\n✅ Anonymous chat\n✅ Random matching\n✅ Limited hidden mode\n✅ Reporting system\n✅ Daily notifications"
+PAID_FEATURES = "\n💎 VIP Features:\n✅ Fast Matching\n✅ Gender-Based Search\n✅ Full Hidden Mode\n✅ Ad-Free Experience\n✅ Priority Support\n✅ Payment Integration (Telegram Stars & PayPal)"
 
-# 🔹 Main Menu Buttons
-def main_menu():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("🔍 Find Chat"))
-    markup.add(KeyboardButton("🌟 VIP Membership"), KeyboardButton("❌ Leave Chat"))
-    return markup
+# Main Menu Keyboard
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add(KeyboardButton("🔍 Find a partner (/search)"))
+main_menu.add(KeyboardButton("👫 Search by gender (VIP) (/pay)"))
+main_menu.add(KeyboardButton("💎 Become a VIP (/vip)"))
+main_menu.add(KeyboardButton("⚙️ Settings (/settings)"), KeyboardButton("📢 Notifications"))
+main_menu.add(KeyboardButton("💰 Payment Support (/paysupport)"))
+main_menu.add(KeyboardButton("📜 Rules (/rules)"), KeyboardButton("📖 Terms (/terms)"))
+main_menu.add(KeyboardButton("🆔 My ID (/myid)"))
 
-# 🔹 Start Command
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, "Welcome to Anonymous Chat Bot!", reply_markup=main_menu())
+# Start command
+@dp.message_handler(commands=['start'])
+async def start_command(message: types.Message):
+    await message.reply(f"Welcome to the Anonymous Chat Bot!\nUse the buttons below to navigate.{FREE_FEATURES}\n\nUpgrade to VIP for more benefits: /vip", reply_markup=main_menu)
 
-# 🔹 Find a Chat Partner
-@bot.message_handler(func=lambda message: message.text == "🔍 Find Chat")
-def find_chat(message):
-    user_id = message.chat.id
+# VIP Membership
+@dp.message_handler(commands=['vip'])
+async def vip_command(message: types.Message):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("Buy VIP (Telegram Stars)", url="https://t.me/yourbot?start=vip"))
+    keyboard.add(InlineKeyboardButton("Buy VIP (PayPal)", url="https://yourpaypalpaymentlink.com"))
+    await message.reply(f"Become a VIP!\n{PAID_FEATURES}\n\nSelect a payment method below:", reply_markup=keyboard)
 
-    # If user is already in a chat
-    if user_id in active_chats:
-        bot.send_message(user_id, "❌ You are already in a chat!")
-        return
+# PayPal Webhook Handling
+async def handle_paypal_webhook(request):
+    data = await request.json()
+    logging.info(f"Received PayPal Webhook: {json.dumps(data, indent=2)}")
+    
+    if data.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
+        user_id = data["resource"]["custom_id"]  # Use custom_id to map user payment
+        await bot.send_message(user_id, "✅ Payment received! You are now a VIP user!")
+    return web.Response(status=200)
 
-    # If there is a waiting user, pair them
-    if waiting_users:
-        partner_id = waiting_users.pop(0)  # Get the first waiting user
-        active_chats[user_id] = partner_id
-        active_chats[partner_id] = user_id
+# Webhook setup
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info("Webhook set successfully!")
 
-        bot.send_message(user_id, "✅ Connected! Say hi! 👋")
-        bot.send_message(partner_id, "✅ Connected! Say hi! 👋")
-    else:
-        waiting_users.append(user_id)
-        bot.send_message(user_id, "🔄 Waiting for a partner...")
+async def on_shutdown(dp):
+    await bot.delete_webhook()
+    logging.info("Webhook deleted.")
 
-# 🔹 Forward Messages Between Users
-@bot.message_handler(func=lambda message: message.chat.id in active_chats)
-def forward_message(message):
-    user_id = message.chat.id
+# Web server for PayPal Webhook
+app = web.Application()
+app.router.add_post("/webhook", handle_paypal_webhook)
 
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        if partner_id in active_chats and active_chats[partner_id] == user_id:
-            bot.send_message(partner_id, message.text)
-        else:
-            bot.send_message(user_id, "❌ Your partner has left the chat.")
-            del active_chats[user_id]
-    else:
-        bot.send_message(user_id, "❌ You are not in a chat!")
-
-# 🔹 Leave Chat
-@bot.message_handler(func=lambda message: message.text == "❌ Leave Chat")
-def leave_chat(message):
-    user_id = message.chat.id
-
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        bot.send_message(partner_id, "❌ Your partner has left the chat.")
-        del active_chats[partner_id]
-        del active_chats[user_id]
-
-    elif user_id in waiting_users:
-        waiting_users.remove(user_id)
-
-    bot.send_message(user_id, "✅ You left the chat!", reply_markup=main_menu())
-
-# 🔹 Run the bot
-print("Bot is running...")
-bot.polling()
+if __name__ == "__main__":
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+        web_app=app
+    )
